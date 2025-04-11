@@ -360,7 +360,7 @@ if __name__ == '__main__':
             modelhub_trt = ModelHubTrt(model_config_urls=[model_config_url_classifier, model_config_url_yolo],
                                        local_storage=local_storage_path,
                                        trt_build_wait_timeout=600, # Збільшено таймаут
-                                       trt_onnx_opset=13,
+                                       trt_onnx_opset=19,
                                        trt_builder_memory_limit_gb=4,
                                        trt_ultralytics_workspace_gb=4) # Ліміт для YOLO
 
