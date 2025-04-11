@@ -43,8 +43,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     keywords='modelhub modelhub-client modelhub-client-trt TensorRT ria-com ria.com ria',
-    entry_points={
-        'console_scripts': ['modelhub_client=modelhub_client:main'],
-    },
     python_requires='>=3.9'
 )
