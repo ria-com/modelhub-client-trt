@@ -22,11 +22,9 @@ try:
                                trt_builder_memory_limit_gb=4) # Можливо, знадобиться більше пам'яті для великого ONNX
 
     # *** ПЕРЕВІРТЕ ЦЕЙ ПАРАМЕТР У ВАШОМУ quick_start.py ***
-    run_fp16_mode = True # <--- Встановіть True, якщо хочете FP16, False - якщо ні
     print(f"\nЗапуск завантаження та TRT оптимізації (через ONNX, FP16={run_fp16_mode}) для моделі: {model_name_to_optimize}")
     optimized_model_info = modelhub_trt.download_model_by_name_trt(
         model_name_to_optimize,
-        fp16_mode=run_fp16_mode, # Передаємо значення змінної
         max_batch_size=1
     )
     # ... (решта коду прикладу) ...

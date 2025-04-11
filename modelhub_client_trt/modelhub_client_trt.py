@@ -77,8 +77,8 @@ class ModelHubTrt(ModelHub):
     def download_model_by_name_trt(self,
                                    model_name: str,
                                    path: Optional[str] = None,
-                                   fp16_mode: bool = False,
                                    max_batch_size: int = 1) -> Dict[str, str]:
+        fp16_mode = True
         if not _ONNX_AVAILABLE or not _TENSORRT_AVAILABLE:
             raise ImportError("Бібліотеки onnx та/або tensorrt не встановлені.")
 
@@ -360,11 +360,9 @@ if __name__ == '__main__':
                                        trt_builder_memory_limit_gb=4) # Можливо, знадобиться більше пам'яті для великого ONNX
 
             # *** ПЕРЕВІРТЕ ЦЕЙ ПАРАМЕТР У ВАШОМУ quick_start.py ***
-            run_fp16_mode = False # <--- Встановіть True, якщо хочете FP16, False - якщо ні
-            print(f"\nЗапуск завантаження та TRT оптимізації (через ONNX, FP16={run_fp16_mode}) для моделі: {model_name_to_optimize}")
+            print(f"\nЗапуск завантаження та TRT оптимізації (через ONNX для моделі: {model_name_to_optimize}")
             optimized_model_info = modelhub_trt.download_model_by_name_trt(
                 model_name_to_optimize,
-                fp16_mode=run_fp16_mode, # Передаємо значення змінної
                 max_batch_size=1
             )
             # ... (решта коду прикладу) ...
