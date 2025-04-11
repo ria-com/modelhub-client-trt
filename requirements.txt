@@ -1,3 +1,5 @@
 modelhub_client @ git+https://github.com/ria-com/modelhub-client.git
 torch
 torch2trt
+onnxslim
+onnxruntime-gpu
