@@ -3,4 +3,4 @@ torch2trt
 onnxslim
 onnxruntime-gpu
 modelhub_client @ git+https://github.com/ria-com/modelhub-client.git
-git+https://github.com/NVIDIA-AI-IOT/torch2trt.git
+torch2trt @ git+https://github.com/NVIDIA-AI-IOT/torch2trt.git
