@@ -206,9 +206,9 @@ class ImageClassifierConverter(BaseTrtConverter):
             profile = builder.create_optimization_profile()
             # Припускаємо, що вхід називається 'images', як визначено вище
             input_name = 'images'
-            min_shape = (max_batch_size, 3, image_h, image_w) # Використовуємо max_batch_size для всіх
-            opt_shape = (max_batch_size, 3, image_h, image_w)
-            max_shape = (max_batch_size, 3, image_h, image_w)
+            min_shape = (max_batch_size, *input_size) # Використовуємо max_batch_size для всіх
+            opt_shape = (max_batch_size, *input_size)
+            max_shape = (max_batch_size, *input_size)
             profile.set_shape(input_name, min=min_shape, opt=opt_shape, max=max_shape)
             config.add_optimization_profile(profile)
 
