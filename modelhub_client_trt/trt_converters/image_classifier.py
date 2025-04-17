@@ -45,13 +45,16 @@ class ImageClassifierConverter(BaseTrtConverter):
             raise RuntimeError(f"Не вдалося завантажити TorchScript модель '{original_model_path}': {e}") from e
 
         # --- 6. Підготувати вхідні дані ---
+        input_size = model_config.get("input_size")
         image_h = model_config.get("image_size_h")
         image_w = model_config.get("image_size_w")
-        if not image_h or not image_w:
-            raise ValueError(f"Відсутні 'image_size_h'/'image_size_w' у конфігурації для моделі")
+        if not input_size and (not image_h or not image_w):
+            raise ValueError(f"Відсутні 'image_size_h'/'image_size_w' або input_size у конфігурації для моделі")
+        if not input_size:
+            input_size = (3, image_h, image_w)
         try:
             dtype = torch.half if fp16_mode and device.type == 'cuda' else torch.float
-            example_input = torch.randn(max_batch_size, 3, image_h, image_w, device=device, dtype=dtype)
+            example_input = torch.randn(max_batch_size, *input_size, device=device, dtype=dtype)
             print(f"Використовується приклад вхідних даних для ONNX ({example_input.dtype}) з формою: {example_input.shape} на {device}")
         except Exception as e:
             raise RuntimeError(f"Помилка створення прикладу вхідних даних: {e}") from e
