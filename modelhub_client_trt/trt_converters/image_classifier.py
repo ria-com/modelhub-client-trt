@@ -32,17 +32,30 @@ class ImageClassifierConverter(BaseTrtConverter):
 
         # --- 5. Завантажити модель TorchScript ---
         print(f"(ImageClassifier) Завантаження TorchScript моделі з: {original_model_path}")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         try:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = torch.jit.load(original_model_path, map_location=device).eval()
-            if fp16_mode:
-                if device.type == 'cuda':
-                    print("Конвертація завантаженої моделі в FP16...")
-                    model = model.half()
+        except Exception as jit_err:
+            warnings.warn(f"Не вдалося завантажити TorchScript модель '{original_model_path}': {e}")
+            try:
+                obj = torch.load(original_model_path, map_location=device, weights_only=False)    
+                if isinstance(obj, torch.nn.Module):
+                    model = obj.to(device)
                 else:
-                    warnings.warn("FP16 mode requested but running on CPU.")
-        except Exception as e:
-            raise RuntimeError(f"Не вдалося завантажити TorchScript модель '{original_model_path}': {e}") from e
+                    raise RuntimeError(f"Непідтримуваний тип об’єкта з torch.load: {type(obj)}")
+                model.eval()
+            except Exception as load_err:
+                raise RuntimeError(
+                    f"Не вдалося завантажити модель '{original_model_path}' ані як TorchScript, "
+                    f"ані через torch.load: {load_err}"
+                ) from load_err
+            
+        if fp16_mode:
+            if device.type == 'cuda':
+                print("Конвертація завантаженої моделі в FP16...")
+                model = model.half()
+            else:
+                warnings.warn("FP16 mode requested but running on CPU.")
 
         # --- 6. Підготувати вхідні дані ---
         input_size = model_config.get("input_size")
