@@ -5,8 +5,23 @@ import tensorrt as trt
 import warnings
 import glob
 from typing import Dict, Any, Optional
-
+from contextlib import contextmanager
 from .base import BaseTrtConverter, TRT_LOGGER
+
+
+@contextmanager
+def disable_fused_mha():
+    # 1) Вимикаємо MHA fast‑path
+    old_flag = torch.backends.mha.get_fastpath_enabled()
+    torch.backends.mha.set_fastpath_enabled(False)        # :contentReference[oaicite:1]{index=1}
+    # 2) Вимикаємо всі fused‑ядра SDPA (Flash / Efficient / cuDNN)
+    cm = torch.backends.cuda.sdp_kernel(
+        enable_flash=False, enable_mem_efficient=False,
+        enable_math=True, enable_cudnn=False)              # :contentReference[oaicite:2]{index=2}
+    with cm:
+        try:   yield
+        finally: torch.backends.mha.set_fastpath_enabled(old_flag)
+
 
 class ImageClassifierConverter(BaseTrtConverter):
     """
@@ -81,9 +96,10 @@ class ImageClassifierConverter(BaseTrtConverter):
         try:
             # Переконуємось, що директорія для ONNX існує
             os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-            torch.onnx.export(model, example_input, onnx_path, export_params=True, opset_version=opset,
-                              do_constant_folding=True, input_names=input_names, output_names=output_names,
-                              dynamic_axes=None, verbose=False)
+            with disable_fused_mha(), torch.no_grad():
+                torch.onnx.export(model, example_input, onnx_path, export_params=True, opset_version=opset,
+                                  do_constant_folding=True, input_names=input_names, output_names=output_names,
+                                  dynamic_axes=None, verbose=False)
             print("Початковий експорт в ONNX успішний.")
             onnx_initial_export_succeeded = True
 
