@@ -36,7 +36,7 @@ class ImageClassifierConverter(BaseTrtConverter):
         try:
             model = torch.jit.load(original_model_path, map_location=device).eval()
         except Exception as jit_err:
-            warnings.warn(f"Не вдалося завантажити TorchScript модель '{original_model_path}': {e}")
+            warnings.warn(f"Не вдалося завантажити TorchScript модель '{original_model_path}': {jit_err}")
             try:
                 obj = torch.load(original_model_path, map_location=device, weights_only=False)    
                 if isinstance(obj, torch.nn.Module):
