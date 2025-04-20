@@ -3,9 +3,6 @@ This class extends the capabilities of the https://github.com/ria-com/modelhub-c
 
 ## Installation
 ```bash
-git clone https://github.com/NVIDIA-AI-IOT/torch2trt
-cd torch2trt
-python3.12 setup.py install
 python3.12 -m pip install git+https://github.com/ria-com/modelhub-client-trt.git
 ```
 or
