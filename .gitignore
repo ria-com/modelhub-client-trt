@@ -1,5 +1,10 @@
 # manual ignore dirs
-data/
+data
+data_quick_start
+bin
+examples/TextClassifierEngineExample.py
+examples/TextClassifierExample.py
+
 # Created by .ignore support plugin (hsz.mobi)
 ### Python template
 # Byte-compiled / optimized / DLL files
