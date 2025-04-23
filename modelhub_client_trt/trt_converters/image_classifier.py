@@ -43,7 +43,7 @@ class ImageClassifierConverter(BaseTrtConverter):
         fp16_mode = builder_config.get('fp16_mode', True)
         max_batch_size = builder_config.get('max_batch_size', 1)
         memory_limit = builder_config.get('memory_limit')
-        opset = builder_config.get('opset', 13)
+        opset = builder_config.get('opset', 19)
 
         # --- 5. Завантажити модель TorchScript ---
         print(f"(ImageClassifier) Завантаження TorchScript моделі з: {original_model_path}")

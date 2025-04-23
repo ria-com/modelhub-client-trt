@@ -76,7 +76,7 @@ class ModelHubTrt(ModelHub):
                  postfix: str = "./modelhub",
                  trt_build_wait_timeout: int = 300,
                  trt_wait_interval: int = 5,
-                 trt_onnx_opset: int = 17,
+                 trt_onnx_opset: int = 19,
                  trt_builder_memory_limit_gb: int = 4,
                  trt_ultralytics_workspace_gb: int = 4
                  ) -> None:
@@ -426,7 +426,7 @@ if __name__ == '__main__':
                                         ],
                                        local_storage=local_storage_path,
                                        trt_build_wait_timeout=600,
-                                       trt_onnx_opset=17,
+                                       trt_onnx_opset=19,
                                        trt_builder_memory_limit_gb=8, # Збільшено для трансформерів
                                        trt_ultralytics_workspace_gb=4)
 
