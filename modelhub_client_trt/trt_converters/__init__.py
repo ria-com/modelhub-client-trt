@@ -3,12 +3,16 @@ from .base import BaseTrtConverter
 from .image_classifier import ImageClassifierConverter
 from .yolo import YoloConverter
 from .text_classifier import TextClassifierConverter # <--- ДОДАНО ІМПОРТ
+from .craft import CraftTrtConverter
+from .craft_refinenet import RefineNetTrtConverter
 
 # Реєстр типів конвертерів
 TRT_CONVERTERS = {
     "image_classifier": ImageClassifierConverter,
     "yolo": YoloConverter,
     "text_classifier": TextClassifierConverter, # <--- ДОДАНО ЗАПИС
+    "craft": CraftTrtConverter,
+    "craft_refinenet": RefineNetTrtConverter,
     # Додайте сюди інші типи конвертерів за потреби
 }
 
@@ -24,4 +28,6 @@ def get_converter(converter_type: str) -> BaseTrtConverter:
     else:
         raise ValueError(f"Невідомий тип конвертера TensorRT: '{converter_type}'. Доступні: {list(TRT_CONVERTERS.keys())}")
 
-__all__ = ['BaseTrtConverter', 'ImageClassifierConverter', 'YoloConverter', 'TextClassifierConverter', 'get_converter', 'TRT_CONVERTERS'] # <--- ОНОВЛЕНО __all__
+__all__ = ['BaseTrtConverter', 'ImageClassifierConverter', 'YoloConverter', 'TextClassifierConverter',
+           'CraftTrtConverter', 'RefineNetTrtConverter',
+           'get_converter', 'TRT_CONVERTERS'] # <--- ОНОВЛЕНО __all__
