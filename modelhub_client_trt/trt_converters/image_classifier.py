@@ -4,9 +4,77 @@ import onnx
 import tensorrt as trt
 import warnings
 import glob
+import inspect
 from typing import Dict, Any, Optional
 from contextlib import contextmanager
 from .base import BaseTrtConverter, TRT_LOGGER
+
+
+def _is_scriptmodule_export_error(e: Exception) -> bool:
+    """
+    True, якщо це саме той кейс: новий ONNX exporter (torch.export) не вміє ScriptModule.
+    Працюємо по типах/тексту, бо в різних версіях torch класи можуть відрізнятися.
+    """
+    msg = str(e)
+    needle = "Exporting a ScriptModule is not supported"
+    if needle in msg:
+        return True
+
+    # Часто йде як TorchExportError із текстом про torch.export
+    if ("TorchExportError" in type(e).__name__) and ("torch.export" in msg or "exportdb" in msg):
+        return True
+
+    # Інколи ValueError/RuntimeError з тією ж ідеєю
+    if ("ScriptModule" in msg) and ("torch.export" in msg or needle in msg):
+        return True
+
+    # Перевіримо ланцюжок cause/context
+    cur = e
+    for _ in range(5):
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        if not cur:
+            break
+        m = str(cur)
+        if needle in m:
+            return True
+        if ("TorchExportError" in type(cur).__name__) and ("torch.export" in m or "exportdb" in m):
+            return True
+    return False
+
+
+def _torch_onnx_export_with_optional_dynamo(
+    model,
+    example_input,
+    onnx_path: str,
+    *,
+    export_params: bool,
+    opset_version: int,
+    do_constant_folding: bool,
+    input_names,
+    output_names,
+    dynamic_axes,
+    verbose: bool,
+    force_legacy: bool,
+):
+    """
+    Викликає torch.onnx.export. Якщо force_legacy=True і у torch.onnx.export є параметр 'dynamo',
+    то передає dynamo=False (legacy exporter).
+    """
+    export_kwargs = dict(
+        export_params=export_params,
+        opset_version=opset_version,
+        do_constant_folding=do_constant_folding,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        verbose=verbose,
+    )
+
+    sig = inspect.signature(torch.onnx.export)
+    if force_legacy and ("dynamo" in sig.parameters):
+        export_kwargs["dynamo"] = False
+
+    torch.onnx.export(model, example_input, onnx_path, **export_kwargs)
 
 
 @contextmanager
@@ -93,13 +161,34 @@ class ImageClassifierConverter(BaseTrtConverter):
         output_names = ['output']
         onnx_initial_export_succeeded = False
         onnx_model = None
-        try:
-            # Переконуємось, що директорія для ONNX існує
+
+        def _do_export(force_legacy: bool) -> None:
+            # Якщо попередня спроба залишила битий файл — прибираємо
+            if os.path.exists(onnx_path):
+                try:
+                    os.remove(onnx_path)
+                except OSError:
+                    pass
+
             os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
             with disable_fused_mha(), torch.no_grad():
-                torch.onnx.export(model, example_input, onnx_path, export_params=True, opset_version=opset,
-                                  do_constant_folding=True, input_names=input_names, output_names=output_names,
-                                  dynamic_axes=None, verbose=False)
+                _torch_onnx_export_with_optional_dynamo(
+                    model,
+                    example_input,
+                    onnx_path,
+                    export_params=True,
+                    opset_version=opset,
+                    do_constant_folding=True,
+                    input_names=input_names,
+                    output_names=output_names,
+                    dynamic_axes=None,
+                    verbose=False,
+                    force_legacy=force_legacy,
+                )
+
+        try:
+            # 1) Спроба "як зараз" (новий exporter / default поведінка torch)
+            _do_export(force_legacy=False)
             print("Початковий експорт в ONNX успішний.")
             onnx_initial_export_succeeded = True
 
@@ -111,17 +200,37 @@ class ImageClassifierConverter(BaseTrtConverter):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            if not onnx_initial_export_succeeded:
-                raise RuntimeError(f"Помилка під час початкового експорту в ONNX: {e}") from e
+
+            # Якщо це саме ScriptModule+torch.export кейс — робимо fallback на legacy exporter
+            if _is_scriptmodule_export_error(e):
+                print("WARN: torch.export не підтримує ScriptModule. Повтор експорту через legacy exporter (dynamo=False)...")
+                try:
+                    _do_export(force_legacy=True)
+                    print("Legacy експорт в ONNX успішний.")
+                    onnx_initial_export_succeeded = True
+
+                    print(f"Перевірка створеної ONNX моделі (legacy): {onnx_path}")
+                    onnx_model = onnx.load(onnx_path)
+                    onnx.checker.check_model(onnx_model)
+                    print("ONNX модель (legacy) пройшла перевірку.")
+                except Exception as e2:
+                    import traceback
+                    traceback.print_exc()
+                    raise RuntimeError(f"Помилка під час експорту в ONNX навіть з legacy exporter: {e2}") from e2
+
             else:
-                warnings.warn(f"Помилка під час перевірки ONNX моделі: {e}. Спроба продовжити...")
-                if onnx_model is None and os.path.exists(onnx_path):
-                    try:
-                       onnx_model = onnx.load(onnx_path)
-                    except Exception as load_e:
-                       warnings.warn(f"Не вдалося завантажити ONNX модель після помилки перевірки: {load_e}")
-                       # Якщо не можемо навіть завантажити, то експорт вважається неуспішним
-                       onnx_initial_export_succeeded = False
+                # Не наш кейс — як і було раніше
+                if not onnx_initial_export_succeeded:
+                    raise RuntimeError(f"Помилка під час початкового експорту в ONNX: {e}") from e
+                else:
+                    warnings.warn(f"Помилка під час перевірки ONNX моделі: {e}. Спроба продовжити...")
+                    if onnx_model is None and os.path.exists(onnx_path):
+                        try:
+                            onnx_model = onnx.load(onnx_path)
+                        except Exception as load_e:
+                            warnings.warn(f"Не вдалося завантажити ONNX модель після помилки перевірки: {load_e}")
+                            onnx_initial_export_succeeded = False
+
 
         if onnx_initial_export_succeeded and onnx_model:
             try:
