@@ -7,7 +7,7 @@ import glob
 import inspect
 from typing import Dict, Any, Optional
 from contextlib import contextmanager
-from .base import BaseTrtConverter, TRT_LOGGER
+from .base import BaseTrtConverter, TRT_LOGGER, get_network_creation_flags, platform_supports_fast, try_set_precision_flag
 
 
 def _is_scriptmodule_export_error(e: Exception) -> bool:
@@ -260,7 +260,7 @@ class ImageClassifierConverter(BaseTrtConverter):
         # --- 8. Побудова TRT двигуна ---
         print(f"Побудова TensorRT двигуна (fp16={fp16_mode}, max_batch={max_batch_size}) з ONNX...")
         builder = trt.Builder(TRT_LOGGER)
-        network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        network_flags = get_network_creation_flags()
         network = builder.create_network(network_flags)
         parser = trt.OnnxParser(network, TRT_LOGGER)
         config = builder.create_builder_config()
@@ -274,8 +274,7 @@ class ImageClassifierConverter(BaseTrtConverter):
 
 
         if fp16_mode:
-            if builder.platform_has_fast_fp16:
-                config.set_flag(trt.BuilderFlag.FP16)
+            if platform_supports_fast(builder, "platform_has_fast_fp16") and try_set_precision_flag(config, "FP16"):
                 print("Увімкнено режим FP16 для білдера TensorRT.")
             else:
                 warnings.warn("Платформа не має швидкої підтримки FP16.")
@@ -284,7 +283,13 @@ class ImageClassifierConverter(BaseTrtConverter):
         try:
             with open(onnx_path, 'rb') as onnx_model_file:
                 print(f"Парсинг ONNX файлу: {onnx_path}")
-                success = parser.parse(onnx_model_file.read())
+                # path= is required whenever the model has externally
+                # stored weights (a sibling "<name>.onnx.data" file,
+                # written by newer torch.onnx.export for large tensors) --
+                # parse() otherwise has no filesystem context to resolve
+                # that file and fails with "Failed to import initializer"
+                # on the externalized weight.
+                success = parser.parse(onnx_model_file.read(), path=onnx_path)
         except Exception as e:
             raise RuntimeError(f"Помилка читання/парсингу ONNX '{onnx_path}': {e}") from e
 

@@ -40,6 +40,7 @@ except Exception as e:
 from modelhub_client import ModelHub
 
 # --- Імпорт фабрики конвертерів ТА СЛОВНИКА КОНВЕРТЕРІВ ---
+from .trt_converters.base import trt_export_nms_enabled
 from .trt_converters import get_converter, BaseTrtConverter, TRT_CONVERTERS # <--- Додано TRT_CONVERTERS
 
 from .trt_converters.yolo import _ULTRALYTICS_AVAILABLE
@@ -61,6 +62,52 @@ def sanitize_for_filename(name: str) -> str:
     name = name.replace('.', '_')
     return name
 # --- Кінець незмінної частини ---
+
+
+def auto_detect_converter_type(original_model_path: str, model_config: Dict[str, Any]) -> str:
+    """
+    Автоматичне визначення типу конвертера TensorRT для моделі, коли
+    `tensorrt.type` не вказано явно у конфігурації моделі.
+
+    Винесено в окрему (чисту, без мережі/GPU) функцію з `download_model_by_name_trt`,
+    щоб гілки визначення архітектури можна було юніт-тестувати без завантаження
+    моделі чи доступу до GPU.
+
+    Правила (у порядку перевірки):
+      1. Директорія з `config.json` -> 'text_classifier' (HuggingFace-стиль).
+      2. `model_config['architecture']` містить 'yolo' -> 'yolo'.
+      3. `model_config['architecture']` містить 'stn-ocr' -> 'crnn' (CTC-CRNN OCR
+         sequence-модель — НЕ image_classifier).
+      4. Файл закінчується на '.pt' -> 'image_classifier' (припускаємо TorchScript).
+      5. Інакше -> 'image_classifier' (типовий фолбек за замовчуванням).
+    """
+    model_architecture = str(model_config.get("architecture", "")).lower()
+    if os.path.isdir(original_model_path) and os.path.exists(os.path.join(original_model_path, 'config.json')):
+        converter_type = 'text_classifier'
+        print(f"Автоматично визначено тип конвертера як '{converter_type}' (папка з config.json).")
+    elif "yolo" in model_architecture:
+        # Конфіг моделі явно вказує архітектуру YOLO (напр. "yoloV5"/"yoloV8") у полі
+        # "architecture" — надійніший сигнал, ніж просто розширення файлу, і не вимагає
+        # спроби завантаження моделі для визначення типу.
+        converter_type = 'yolo'
+        print(f"Автоматично визначено тип конвертера як '{converter_type}' "
+              f"(поле 'architecture'='{model_config.get('architecture')}' конфігу вказує на YOLO).")
+    elif "stn-ocr" in model_architecture:
+        # Конфіг моделі явно вказує архітектуру STN-OCR (CTC-CRNN sequence-модель)
+        # — так само надійний сигнал, як і "yolo" вище.
+        converter_type = 'crnn'
+        print(f"Автоматично визначено тип конвертера як '{converter_type}' "
+              f"(поле 'architecture'='{model_config.get('architecture')}' конфігу вказує на STN-OCR/CRNN).")
+    elif original_model_path.endswith(".pt"):
+        # .pt може бути YOLO або TorchScript image_classifier. Якщо архітектура з конфігу
+        # не підказала YOLO/STN-OCR (гілки вище), безпечніше припустити image_classifier.
+        converter_type = 'image_classifier'
+        print(f"Автоматично визначено тип конвертера як '{converter_type}' (файл .pt, припускаємо TorchScript).")
+    else:
+        # Якщо нічого не підійшло, повертаємось до image_classifier за замовчуванням
+        converter_type = "image_classifier"
+        print(f"Не вдалося автоматично визначити тип конвертера. Використовується за замовчуванням: '{converter_type}'.")
+    return converter_type
 
 class ModelHubTrt(ModelHub):
     """
@@ -140,27 +187,7 @@ class ModelHubTrt(ModelHub):
         if converter_type is None:
             warnings.warn(f"Тип конвертера TensorRT не вказано або не розпізнано у конфігу для '{model_name}'. "
                           f"Спроба автоматичного визначення...")
-            if os.path.isdir(original_model_path) and os.path.exists(os.path.join(original_model_path, 'config.json')):
-                 converter_type = 'text_classifier'
-                 print(f"Автоматично визначено тип конвертера як '{converter_type}' (папка з config.json).")
-            elif original_model_path.endswith(".pt"):
-                 # .pt може бути YOLO або TorchScript image_classifier. Безпечніше припустити image_classifier.
-                 converter_type = 'image_classifier'
-                 print(f"Автоматично визначено тип конвертера як '{converter_type}' (файл .pt, припускаємо TorchScript).")
-                 # Якщо ultralytics доступний, можна було б додати перевірку, але це ускладнить логіку
-                 # if _ULTRALYTICS_AVAILABLE:
-                 #     try:
-                 #         # Спроба завантажити як YOLO без повного створення об'єкта
-                 #         from ultralytics.nn.tasks import attempt_load_one_weight
-                 #         attempt_load_one_weight(original_model_path)
-                 #         converter_type = 'yolo'
-                 #         print(f"Автоматично визначено тип конвертера як '{converter_type}' (файл .pt схожий на YOLO).")
-                 #     except:
-                 #         print(f"Файл .pt не схожий на YOLO, залишаємо '{converter_type}'.")
-            else:
-                 # Якщо нічого не підійшло, повертаємось до image_classifier за замовчуванням
-                 converter_type = "image_classifier"
-                 print(f"Не вдалося автоматично визначити тип конвертера. Використовується за замовчуванням: '{converter_type}'.")
+            converter_type = auto_detect_converter_type(original_model_path, model_config)
 
         # Фінальна перевірка, чи отриманий тип існує
         if converter_type not in TRT_CONVERTERS:
@@ -190,6 +217,10 @@ class ModelHubTrt(ModelHub):
         # print(f"Директорія для файлів TensorRT: {trt_target_dir}") # Закоментуємо зайвий вивід
 
         engine_suffix = f"-bs{max_batch_size}-{'fp16' if fp16_mode else 'fp32'}"
+        if trt_export_nms_enabled(model_config):
+            # Інший граф (NMS запечений) → інше ім'я файлу, щоб не підхопити
+            # вже закешований на сервері двигун без NMS для тих самих ваг.
+            engine_suffix += "-nms"
         engine_file_name = (f"{model_name_part}-{sanitized_gpu_name}-trt{trt_version_sanitized}{engine_suffix}.engine")
         trt_engine_path = os.path.join(trt_target_dir, engine_file_name)
         lock_file_path = trt_engine_path + ".lock"

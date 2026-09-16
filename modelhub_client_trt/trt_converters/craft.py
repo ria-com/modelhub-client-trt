@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import glob
+import inspect
 import warnings
 from typing import Dict, Any, Optional
 
@@ -28,7 +29,7 @@ import torch
 import onnx
 import tensorrt as trt
 
-from .base import BaseTrtConverter, TRT_LOGGER
+from .base import BaseTrtConverter, TRT_LOGGER, get_network_creation_flags, platform_supports_fast, try_set_precision_flag
 
 
 # ----------------------------------------------------------------------
@@ -123,10 +124,13 @@ class CraftTrtConverter(BaseTrtConverter):
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
 
         print(f"[CRAFT] Exporting to ONNX → {onnx_path} (opset {opset})")
-        torch.onnx.export(
-            model,
-            example_input,
-            onnx_path,
+        # Newer torch defaults torch.onnx.export to the dynamo=True exporter,
+        # which cannot convert this model's `dynamic_axes` into
+        # `dynamic_shapes` (raises "Failed to convert 'dynamic_axes' to
+        # 'dynamic_shapes'"). Force the legacy exporter, which supports
+        # `dynamic_axes` directly -- same fix pattern already applied in
+        # image_classifier.py's `_torch_onnx_export_with_optional_dynamo`.
+        export_kwargs = dict(
             export_params=True,
             opset_version=opset,
             do_constant_folding=True,
@@ -138,6 +142,10 @@ class CraftTrtConverter(BaseTrtConverter):
                 "affinity": {2: "height", 3: "width"},
             },
         )
+        sig = inspect.signature(torch.onnx.export)
+        if "dynamo" in sig.parameters:
+            export_kwargs["dynamo"] = False
+        torch.onnx.export(model, example_input, onnx_path, **export_kwargs)
         onnx_model = onnx.load(onnx_path)
         onnx.checker.check_model(onnx_model)
         onnx.save_model(onnx_model, onnx_path, save_as_external_data=False)
@@ -146,7 +154,7 @@ class CraftTrtConverter(BaseTrtConverter):
         # ------------------------------------------------------------------
         # 3. Build TensorRT engine
         # ------------------------------------------------------------------
-        flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        flags = get_network_creation_flags()
         builder = trt.Builder(TRT_LOGGER)
         network = builder.create_network(flags)
         parser = trt.OnnxParser(network, TRT_LOGGER)
@@ -155,14 +163,19 @@ class CraftTrtConverter(BaseTrtConverter):
             trt.MemoryPoolType.WORKSPACE, workspace_size_gb * (1024 ** 3)
         )
 
-        if fp16_mode and builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
+        if fp16_mode and platform_supports_fast(builder, "platform_has_fast_fp16"):
+            try_set_precision_flag(config, "FP16")
         if int8_mode:
-            config.set_flag(trt.BuilderFlag.INT8)
+            try_set_precision_flag(config, "INT8")
 
         print(f"[CRAFT] Parsing ONNX {onnx_path}")
         with open(onnx_path, "rb") as f:
-            if not parser.parse(f.read()):
+            # path= is required whenever the model has externally stored
+            # weights (a sibling "<name>.onnx.data" file, written by newer
+            # torch.onnx.export for large tensors) -- parse() otherwise has
+            # no filesystem context to resolve that file and fails with
+            # "Failed to import initializer" on the externalized weight.
+            if not parser.parse(f.read(), path=onnx_path):
                 msgs = "\n".join(str(parser.get_error(i)) for i in range(parser.num_errors))
                 raise RuntimeError(f"ONNX parse failed:\n{msgs}")
 

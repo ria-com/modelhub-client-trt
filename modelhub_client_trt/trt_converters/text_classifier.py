@@ -21,7 +21,7 @@ except ImportError:
     _TRANSFORMERS_AVAILABLE = False
     warnings.warn("Бібліотека 'transformers' не знайдена. TextClassifierConverter не працюватиме.")
 
-from .base import BaseTrtConverter, TRT_LOGGER
+from .base import BaseTrtConverter, TRT_LOGGER, get_network_creation_flags, platform_supports_fast, try_set_precision_flag
 
 # --- Додаємо адаптовану функцію fix_fp16_network ---
 def fix_fp16_network(network_definition: trt.INetworkDefinition) -> trt.INetworkDefinition:
@@ -175,7 +175,7 @@ def build_trt_engine(
 ):
     """Будує TensorRT двигун з ONNX файлу."""
     builder = trt.Builder(logger)
-    network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    network_flags = get_network_creation_flags()
     network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, logger)
     config = builder.create_builder_config()
@@ -183,11 +183,10 @@ def build_trt_engine(
 
     # --- ЗМІНИ ТУТ ---
     if fp16:
-        if builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
-            # Додаємо прапор для кращої відповідності точності FP32
-            config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
-            print("Увімкнено FP16 для TensorRT з OBEY_PRECISION_CONSTRAINTS.")
+        if platform_supports_fast(builder, "platform_has_fast_fp16") and try_set_precision_flag(config, "FP16"):
+            # Додаємо прапор для кращої відповідності точності FP32 (якщо є в цій версії біндінгів)
+            try_set_precision_flag(config, "OBEY_PRECISION_CONSTRAINTS")
+            print("Увімкнено FP16 для TensorRT.")
         else:
             warnings.warn("Платформа не підтримує швидкий FP16.")
     # --- КІНЕЦЬ ЗМІН ---

@@ -4,6 +4,7 @@ data_quick_start
 bin
 examples/TextClassifierEngineExample.py
 examples/TextClassifierExample.py
+*.bak
 
 # Created by .ignore support plugin (hsz.mobi)
 ### Python template

@@ -29,13 +29,14 @@ CUDA_VISIBLE_DEVICES=1 python3.12 -m modelhub_client_trt.trt_converters.craft_re
 from __future__ import annotations
 
 import os
+import inspect
 import warnings
 from typing import Dict, Any, Optional, Tuple
 
 import torch
 import onnx
 import tensorrt as trt
-from modelhub_client_trt.trt_converters.base import BaseTrtConverter, TRT_LOGGER
+from modelhub_client_trt.trt_converters.base import BaseTrtConverter, TRT_LOGGER, get_network_creation_flags, platform_supports_fast, try_set_precision_flag
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
@@ -221,10 +222,12 @@ class RefineNetTrtConverter(BaseTrtConverter):
         print(f"[ONNX Export] Імена виходів: {output_names}")
 
         try:
-            torch.onnx.export(
-                model,
-                (example_input1, example_input2), # Входи як кортеж
-                onnx_path,
+            # Newer torch defaults torch.onnx.export to the dynamo=True
+            # exporter, which cannot convert `dynamic_axes` into
+            # `dynamic_shapes` for this model. Force the legacy exporter --
+            # same fix pattern already applied in image_classifier.py's
+            # `_torch_onnx_export_with_optional_dynamo` and craft.py.
+            export_kwargs = dict(
                 export_params=True,        # Зберігати ваги в ONNX файлі
                 opset_version=opset,       # Версія ONNX opset
                 do_constant_folding=True,  # Оптимізація (згортання констант)
@@ -238,8 +241,12 @@ class RefineNetTrtConverter(BaseTrtConverter):
                     # Вихід (припускаємо BCHW): осі H та W - це 2 та 3
                     output_names[0]: {2: "height_half", 3: "width_half"},
                 },
-                verbose=False # Встановіть True для детального логування ONNX експорту
+                verbose=False, # Встановіть True для детального логування ONNX експорту
             )
+            sig = inspect.signature(torch.onnx.export)
+            if "dynamo" in sig.parameters:
+                export_kwargs["dynamo"] = False
+            torch.onnx.export(model, (example_input1, example_input2), onnx_path, **export_kwargs)
             print(f"[ONNX Export] Експорт в ONNX завершено успішно.")
         except torch.onnx.errors.UnsupportedOperatorError as op_err:
              print(f"\n[ONNX Export] Помилка! Модель містить оператор, не підтримуваний ONNX opset {opset}: {op_err}")
@@ -276,7 +283,7 @@ class RefineNetTrtConverter(BaseTrtConverter):
         # 3. Build TensorRT engine
         # ------------------------------------------------------------------
         print("[TRT Build] Початок побудови TensorRT двигуна...")
-        flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        flags = get_network_creation_flags()
         builder = trt.Builder(TRT_LOGGER)
         network = builder.create_network(flags)
         parser = trt.OnnxParser(network, TRT_LOGGER)
@@ -290,14 +297,12 @@ class RefineNetTrtConverter(BaseTrtConverter):
 
         # Налаштування точності (FP16/INT8)
         if fp16_mode:
-            if builder.platform_has_fast_fp16:
-                config.set_flag(trt.BuilderFlag.FP16)
+            if platform_supports_fast(builder, "platform_has_fast_fp16") and try_set_precision_flag(config, "FP16"):
                 print("[TRT Build] Увімкнено FP16 mode.")
             else:
                 warnings.warn("[TRT Build] FP16 mode requested, але платформа його не підтримує швидко.")
         if int8_mode:
-            if builder.platform_has_fast_int8:
-                 config.set_flag(trt.BuilderFlag.INT8)
+            if platform_supports_fast(builder, "platform_has_fast_int8") and try_set_precision_flag(config, "INT8"):
                  print("[TRT Build] Увімкнено INT8 mode.")
                  # Увага: INT8 зазвичай потребує калібрування для RefineNet
                  # Тут потрібно додати логіку для INT8 Calibrator, якщо він потрібен
@@ -309,7 +314,12 @@ class RefineNetTrtConverter(BaseTrtConverter):
         print(f"[TRT Build] Парсинг ONNX моделі: {onnx_path}")
         with open(onnx_path, "rb") as f:
             onnx_content = f.read()
-            if not parser.parse(onnx_content):
+            # path= is required whenever the model has externally stored
+            # weights (a sibling "<name>.onnx.data" file, written by newer
+            # torch.onnx.export for large tensors) -- parse() otherwise has
+            # no filesystem context to resolve that file and fails with
+            # "Failed to import initializer" on the externalized weight.
+            if not parser.parse(onnx_content, path=onnx_path):
                 print("\n[TRT Build] ПОМИЛКА парсингу ONNX!")
                 for i in range(parser.num_errors):
                     print(f"    Error {i}: {parser.get_error(i)}")
