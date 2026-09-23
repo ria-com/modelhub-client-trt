@@ -2,7 +2,7 @@ import abc
 import glob
 import os
 import warnings
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import tensorrt as trt # Потрібно для TRT_LOGGER
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING) if trt else None
@@ -66,7 +66,8 @@ def try_set_precision_flag(config: "trt.IBuilderConfig", flag_name: str) -> bool
 
 
 def build_engine_from_onnx(onnx_path: str, engine_path: str, fp16_mode: bool = True,
-                            max_batch_size: int = 1, memory_limit: Optional[int] = None) -> None:
+                            max_batch_size: int = 1, memory_limit: Optional[int] = None,
+                            max_hw: Optional[Tuple[int, int]] = None) -> None:
     """
     Будує статичний TensorRT-двигун з готового ONNX-файлу за допомогою
     "сирого" TensorRT Python API (Builder/OnnxParser), без залежності від
@@ -74,6 +75,11 @@ def build_engine_from_onnx(onnx_path: str, engine_path: str, fp16_mode: bool = T
     — той самий підхід, що вже використовується в `image_classifier.py`, але
     як окрема, повторно використовувана функція, і з вхідною формою, що
     зчитується напряму з розпарсеної мережі (а не хардкодиться як `"images"`).
+
+    `max_hw=(H, W)`: ONNX експортований з динамічними batch/висотою/шириною
+    (rank-4 вхід) — двигун будується з optimization profile, у якому batch
+    зафіксований на `max_batch_size`, а висота/ширина можуть бути від 32 до
+    `H`/`W` (наприклад, прямокутний letterbox замість квадратного).
 
     Raises RuntimeError/ValueError з докладним описом на будь-якому кроці
     (парсинг ONNX, побудова, збереження).
@@ -125,12 +131,26 @@ def build_engine_from_onnx(onnx_path: str, engine_path: str, fp16_mode: bool = T
 
     input_tensor = network.get_input(0)
     input_shape = tuple(input_tensor.shape)
-    if any(d < 0 for d in input_shape):
+    if max_hw is not None:
+        if len(input_shape) != 4 or input_shape[1] < 0:
+            raise ValueError(
+                f"max_hw потребує rank-4 входу зі статичними каналами, а ONNX-вхід "
+                f"'{input_tensor.name}' має форму {input_shape}."
+            )
+        max_h, max_w = max_hw
+        channels = input_shape[1]
+        profile = builder.create_optimization_profile()
+        profile.set_shape(input_tensor.name,
+                          (max_batch_size, channels, 32, 32),
+                          (max_batch_size, channels, max_h, max_w),
+                          (max_batch_size, channels, max_h, max_w))
+        config.add_optimization_profile(profile)
+    elif any(d < 0 for d in input_shape):
         raise ValueError(
             f"ONNX-вхід '{input_tensor.name}' має динамічні виміри {input_shape} — "
             f"цей білдер підтримує лише статичні форми (без optimization profile)."
         )
-    if input_shape[0] != max_batch_size:
+    if input_shape[0] >= 0 and input_shape[0] != max_batch_size:
         raise ValueError(
             f"ONNX-вхід '{input_tensor.name}' має batch-вимір {input_shape[0]}, "
             f"що не збігається з очікуваним max_batch_size={max_batch_size} — "
@@ -166,6 +186,24 @@ def build_engine_from_onnx(onnx_path: str, engine_path: str, fp16_mode: bool = T
         raise RuntimeError(f"Не вдалося зберегти TensorRT двигун: {e}") from e
     finally:
         del serialized_engine, config, parser, network, builder
+
+
+def trt_dynamic_hw_enabled(model_config: Dict[str, Any]) -> bool:
+    """`"tensorrt": {"dynamic_hw": true}` у конфігу моделі: двигун з динамічними
+    висотою/шириною входу (optimization profile до `imgsz`) замість фіксованого
+    квадрата — для моделей, які в PyTorch отримують прямокутний letterbox."""
+    return bool((model_config.get("tensorrt") or {}).get("dynamic_hw"))
+
+
+def trt_engine_suffix(model_config: Dict[str, Any], max_batch_size: int, fp16_mode: bool) -> str:
+    """Суфікс імені файлу двигуна. Інший граф/профіль входу → інше ім'я, щоб не
+    підхопити вже закешований на сервері двигун для тих самих ваг."""
+    suffix = f"-bs{max_batch_size}-{'fp16' if fp16_mode else 'fp32'}"
+    if trt_export_nms_enabled(model_config):
+        suffix += "-nms"
+    if trt_dynamic_hw_enabled(model_config):
+        suffix += "-dynhw"
+    return suffix
 
 
 def trt_export_nms_enabled(model_config: Dict[str, Any]) -> bool:

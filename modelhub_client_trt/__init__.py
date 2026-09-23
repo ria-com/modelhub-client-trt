@@ -5,7 +5,7 @@ The modelhub_client_trt module.
 # Додаємо імпорт _TENSORRT_AVAILABLE з основного файлу
 from .modelhub_client_trt import ModelHubTrt, _TRT_VERSION_STR, get_device_name, _TENSORRT_AVAILABLE
 
-__version__ = '1.2.0'
+__version__ = '1.3.0'
 
 # Додаємо _TENSORRT_AVAILABLE до __all__
 __all__ = (

@@ -1,6 +1,10 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.3.0
+* `tensorrt.dynamic_hw` model config flag: classic YOLOv5 (torch.hub) checkpoints are exported with dynamic height/width and the engine gets an optimization profile up to `imgsz`, so it accepts the same rectangular letterbox as torch.hub AutoShape; the engine file name gets a `-dynhw` suffix.
+* `build_engine_from_onnx(..., max_hw=(H, W))` for rank-4 inputs with dynamic batch/height/width.
+
 ## Release 1.2.0
 * New `crnn` converter for CTC CRNN OCR models (PyTorch Lightning checkpoints).
 * `tensorrt.nms` model config flag: bake NMS into exported YOLO engines; the engine file name gets a `-nms` suffix.

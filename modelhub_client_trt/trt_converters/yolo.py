@@ -14,7 +14,7 @@ except ImportError:
     _ULTRALYTICS_AVAILABLE = False
     warnings.warn("Бібліотека ultralytics не знайдена. Встановіть її: pip install ultralytics")
 
-from .base import BaseTrtConverter, build_engine_from_onnx, trt_export_nms_enabled
+from .base import BaseTrtConverter, build_engine_from_onnx, trt_export_nms_enabled, trt_dynamic_hw_enabled
 
 
 def _is_legacy_yolov5_checkpoint_error(e: Exception) -> bool:
@@ -380,11 +380,15 @@ class YoloConverter(BaseTrtConverter):
            окрема, вже відома несумісність з деякими версіями `tensorrt`).
 
         Статична форма входу (фіксований `imgsz`, batch=1), як і в
-        `build_engine_from_onnx` (без optimization profiles).
+        `build_engine_from_onnx` (без optimization profiles). З
+        `"tensorrt": {"dynamic_hw": true}` ONNX експортується з `--dynamic`, а
+        двигун отримує profile з висотою/шириною до `imgsz` — тоді на вхід
+        можна подавати той самий прямокутний letterbox, що й torch.hub AutoShape.
         """
         h = imgsz_h or 640
         w = imgsz_w or 640
         opset = builder_config.get("opset", 12)
+        dynamic_hw = trt_dynamic_hw_enabled(model_config)
 
         repo_dir = _ensure_yolov5_repo_cached(original_model_path)
         export_script = os.path.join(repo_dir, "export.py")
@@ -402,6 +406,8 @@ class YoloConverter(BaseTrtConverter):
                 "--opset", str(opset),
                 "--device", "0",
             ]
+            if dynamic_hw:
+                cmd.append("--dynamic")
             print(f"(YoloConverter/legacy-yolov5) Запуск: {' '.join(cmd)}")
             result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True, timeout=900)
             if result.returncode != 0:
@@ -423,5 +429,6 @@ class YoloConverter(BaseTrtConverter):
                 onnx_path, engine_path,
                 fp16_mode=fp16_mode, max_batch_size=max_batch_size,
                 memory_limit=builder_config.get("memory_limit"),
+                max_hw=(h, w) if dynamic_hw else None,
             )
         print(f"(YoloConverter/legacy-yolov5) TensorRT-двигун збережено: {engine_path}")

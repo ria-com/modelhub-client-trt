@@ -40,7 +40,7 @@ except Exception as e:
 from modelhub_client import ModelHub
 
 # --- Імпорт фабрики конвертерів ТА СЛОВНИКА КОНВЕРТЕРІВ ---
-from .trt_converters.base import trt_export_nms_enabled
+from .trt_converters.base import trt_engine_suffix
 from .trt_converters import get_converter, BaseTrtConverter, TRT_CONVERTERS # <--- Додано TRT_CONVERTERS
 
 from .trt_converters.yolo import _ULTRALYTICS_AVAILABLE
@@ -216,11 +216,7 @@ class ModelHubTrt(ModelHub):
         os.makedirs(trt_target_dir, exist_ok=True)
         # print(f"Директорія для файлів TensorRT: {trt_target_dir}") # Закоментуємо зайвий вивід
 
-        engine_suffix = f"-bs{max_batch_size}-{'fp16' if fp16_mode else 'fp32'}"
-        if trt_export_nms_enabled(model_config):
-            # Інший граф (NMS запечений) → інше ім'я файлу, щоб не підхопити
-            # вже закешований на сервері двигун без NMS для тих самих ваг.
-            engine_suffix += "-nms"
+        engine_suffix = trt_engine_suffix(model_config, max_batch_size, fp16_mode)
         engine_file_name = (f"{model_name_part}-{sanitized_gpu_name}-trt{trt_version_sanitized}{engine_suffix}.engine")
         trt_engine_path = os.path.join(trt_target_dir, engine_file_name)
         lock_file_path = trt_engine_path + ".lock"
