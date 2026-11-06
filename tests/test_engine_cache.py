@@ -61,7 +61,7 @@ def test_manifest_write_is_atomic_and_leaves_no_tmp(tmp_path):
 
 def test_usable_fast_path_does_not_deserialize(tmp_path):
     e = _engine(tmp_path)
-    ec.write_manifest(e, {"gpu_name": "g", "trt_version": "t", "engine_bytes": 100})
+    ec.write_manifest(e, {"gpu_name": "g", "trt_version": "t", "engine_bytes": 100, "device_checked": True})
     with mock.patch.object(ec, "deserialize_check", side_effect=AssertionError("не мало викликатись")):
         ok, m, _ = ec.engine_is_usable(e, "g", "t")
     assert ok and m["gpu_name"] == "g"
@@ -177,3 +177,63 @@ def test_real_engine_deserializes_and_garbage_does_not(tmp_path):
     bad.write_bytes(b"not an engine" * 100)
     ok, _, reason = ec.deserialize_check(str(bad))
     assert not ok and reason
+
+
+# ---------- двигун з іншої моделі GPU ----------
+
+def _fake_trt(warn):
+    import types
+    trt = types.ModuleType("tensorrt")
+
+    class Severity:
+        ERROR, WARNING, INFO = 1, 2, 3
+
+    class ILogger:
+        def __init__(self):
+            pass
+    ILogger.Severity = Severity
+
+    class Engine:
+        device_memory_size_v2 = 1024
+
+    class Runtime:
+        def __init__(self, logger):
+            self.logger = logger
+
+        def deserialize_cuda_engine(self, payload):
+            if warn:
+                self.logger.log(Severity.WARNING, "Using an engine plan file across different models of devices "
+                                                  "is not supported and is likely to affect performance")
+            return Engine()
+
+    trt.ILogger, trt.Runtime = ILogger, Runtime
+    return trt
+
+
+@pytest.mark.parametrize("warn,ok", [(True, False), (False, True)])
+def test_engine_built_on_another_gpu_model_is_not_usable(tmp_path, monkeypatch, warn, ok):
+    import sys
+    monkeypatch.setitem(sys.modules, "tensorrt", _fake_trt(warn))
+    e = _engine(tmp_path)
+    good, mem, reason = ec.deserialize_check(e)
+    assert good is ok
+    assert (mem == 1024) if ok else ("іншій моделі GPU" in reason)
+
+
+def test_manifest_without_device_check_is_rechecked_once(tmp_path):
+    e = _engine(tmp_path)
+    ec.write_manifest(e, {"gpu_name": "g", "trt_version": "t", "engine_bytes": 100, "adopted": False,
+                          "build_seconds": 12.0})            # як manifest 1.4.0/1.4.1
+    with mock.patch.object(ec, "deserialize_check", return_value=(True, 2048, "")) as check:
+        ok, m, _ = ec.engine_is_usable(e, "g", "t")
+        ec.engine_is_usable(e, "g", "t")
+    assert ok and check.call_count == 1
+    assert m["device_checked"] is True and m["adopted"] is False and m["build_seconds"] == 12.0
+
+
+def test_foreign_engine_with_old_manifest_is_rejected(tmp_path):
+    e = _engine(tmp_path)
+    ec.write_manifest(e, {"gpu_name": "g", "trt_version": "t", "engine_bytes": 100, "adopted": True})
+    with mock.patch.object(ec, "deserialize_check", return_value=(False, None, "зібраний на іншій моделі GPU")):
+        ok, _, reason = ec.engine_is_usable(e, "g", "t")
+    assert not ok and "іншій моделі GPU" in reason

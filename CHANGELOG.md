@@ -1,6 +1,10 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.4.2
+* An engine that TensorRT deserializes but reports as built on another GPU model ("plan file across different models of devices") is treated as unusable and rebuilt, instead of being adopted.
+* Manifests get `device_checked`; manifests written by 1.4.0/1.4.1 are re-checked once (engines adopted by build Jobs before this fix included).
+
 ## Release 1.4.1
 * `crnn` converter: layer sizes come from the checkpoint weights (`linear1` in/out, LSTM hidden size, bidirectional, number of classes) instead of the hard-coded `Linear(5632, 512)`; the input size from the model config (`image_size_h/w`, then `height/width` as OCR configs write it, then the checkpoint `height/width`, then the old 128x384). A wrong input size fails with a clear error before export. Checkpoints with `conv_nn` / `recurrent_layer{1,2}.rnn` module names (cadastral-number-detection, nomeroff-net) are mapped onto the same graph. Example: ria-vin-detection OCR — `Linear(2816, 512)`, 64x2048.
 * Converter auto-detection: a `.ckpt` file with `letters` in the model config is a CRNN OCR checkpoint (`crnn`), not an image classifier.

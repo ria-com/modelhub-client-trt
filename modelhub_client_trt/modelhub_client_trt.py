@@ -323,6 +323,7 @@ class ModelHubTrt(ModelHub):
                     "build_seconds": build_seconds, "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                     "built_on": socket.gethostname(), "library_version": _library_version(),
                     "adopted": False,
+                    "device_checked": True,
                 })
                 print(f"--- Конвертація TensorRT (тип: {converter_type}) завершена за {build_seconds} с ---")
         finally:

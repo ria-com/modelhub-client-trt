@@ -101,8 +101,28 @@ def _engine_payload(blob: bytes) -> bytes:
     return blob
 
 
+# TensorRT десеріалізує двигун, зібраний на ІНШІЙ моделі GPU (того ж покоління), і лише попереджає —
+# «likely to affect performance or even cause errors or deadlock». Такий двигун не годиться.
+_FOREIGN_DEVICE_MARK = "across different models of devices"
+
+
+def _capturing_logger(trt):
+    class _Capture(trt.ILogger):
+        def __init__(self):
+            trt.ILogger.__init__(self)
+            self.messages = []
+
+        def log(self, severity, msg):
+            if severity <= trt.ILogger.Severity.WARNING:
+                self.messages.append(str(msg))
+    return _Capture()
+
+
 def deserialize_check(engine_path: str) -> Tuple[bool, Optional[int], str]:
-    """(чи десеріалізується, device memory у байтах, причина). Потрібен GPU і tensorrt."""
+    """
+    (чи придатний, device memory у байтах, причина). Потрібен GPU і tensorrt.
+    Непридатний і той, що десеріалізувався, але TensorRT каже, що його зібрано на іншій моделі GPU.
+    """
     try:
         import tensorrt as trt
     except ImportError as e:
@@ -110,7 +130,8 @@ def deserialize_check(engine_path: str) -> Tuple[bool, Optional[int], str]:
     try:
         with open(engine_path, "rb") as f:
             payload = _engine_payload(f.read())
-        runtime = trt.Runtime(trt.Logger(trt.Logger.ERROR))
+        logger = _capturing_logger(trt)
+        runtime = trt.Runtime(logger)
         engine = runtime.deserialize_cuda_engine(payload)
         if engine is None:
             return False, None, "deserialize_cuda_engine повернув None (інша версія TensorRT або GPU)"
@@ -118,6 +139,8 @@ def deserialize_check(engine_path: str) -> Tuple[bool, Optional[int], str]:
         if mem is None:
             mem = getattr(engine, "device_memory_size", None)
         del engine
+        if any(_FOREIGN_DEVICE_MARK in m for m in logger.messages):
+            return False, None, "зібраний на іншій моделі GPU (TensorRT: plan file across different models of devices)"
         return True, (int(mem) if mem is not None else None), ""
     except Exception as e:
         return False, None, f"{type(e).__name__}: {e}"
@@ -132,7 +155,7 @@ def engine_is_usable(engine_path: str, gpu_name: str, trt_version: str,
     if not os.path.exists(engine_path):
         return False, None, "немає файлу"
     manifest = read_manifest(engine_path)
-    if manifest_matches(manifest, engine_path, gpu_name, trt_version):
+    if manifest_matches(manifest, engine_path, gpu_name, trt_version) and manifest.get("device_checked"):
         return True, manifest, ""
     if manifest and (manifest.get("gpu_name") != gpu_name or manifest.get("trt_version") != trt_version):
         return False, manifest, (f"зібраний для {manifest.get('gpu_name')} / TensorRT {manifest.get('trt_version')}, "
@@ -140,9 +163,11 @@ def engine_is_usable(engine_path: str, gpu_name: str, trt_version: str,
     ok, device_mem, reason = deserialize_check(engine_path)
     if not ok:
         return False, manifest, reason
-    data = dict(adopt_info or {})
+    data = dict(manifest or {}) if manifest_matches(manifest, engine_path, gpu_name, trt_version) else {}
+    data.update(adopt_info or {})
     data.update(gpu_name=gpu_name, trt_version=trt_version, engine_bytes=os.path.getsize(engine_path),
-                device_memory_bytes=device_mem, adopted=True)
+                device_memory_bytes=device_mem, device_checked=True)
+    data.setdefault("adopted", True)
     try:
         manifest = write_manifest(engine_path, data)
     except OSError as e:
