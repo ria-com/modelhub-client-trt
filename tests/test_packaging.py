@@ -43,3 +43,24 @@ def test_yolo_converter_disables_ultralytics_autoinstall(monkeypatch):
     importlib.import_module("modelhub_client_trt.trt_converters.yolo")
     import os
     assert os.environ["YOLO_AUTOINSTALL"] == "False"
+
+
+def test_yolo_export_runs_from_a_private_copy(tmp_path, monkeypatch):
+    """Дві паралельні збірки однієї моделі не пишуть ONNX у спільний каталог .pt."""
+    from modelhub_client_trt.trt_converters import yolo
+    shared = tmp_path / "model"; shared.mkdir()
+    pt = shared / "m.pt"; pt.write_bytes(b"weights")
+    seen = []
+
+    def fake(self, local, engine_path, onnx_path, model_config, builder_config):
+        seen.append(local)
+        assert os.path.dirname(local) != str(shared)
+        assert open(local, "rb").read() == b"weights"
+        open(engine_path, "wb").write(b"engine")
+
+    monkeypatch.setattr(yolo.YoloConverter, "_convert_from", fake)
+    for gpu in ("A6000", "RTX8000"):
+        d = tmp_path / gpu; d.mkdir()
+        yolo.YoloConverter().convert(str(pt), str(d / "m.engine"), None, {}, {})
+        assert sorted(os.listdir(d)) == ["m.engine"]          # приватну копію прибрано
+    assert seen[0] != seen[1] and os.listdir(shared) == ["m.pt"]

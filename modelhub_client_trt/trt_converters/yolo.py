@@ -138,12 +138,31 @@ class YoloConverter(BaseTrtConverter):
     def convert(self,
                 original_model_path: str,
                 engine_path: str,
-                onnx_path: Optional[str], # Не використовується прямо, але може бути створено ultralytics
+                onnx_path: Optional[str],
                 model_config: Dict[str, Any],
                 builder_config: Dict[str, Any]) -> None:
         """
         Конвертує YOLO модель (.pt) в TensorRT двигун.
+
+        ultralytics пише ONNX/engine поруч із .pt — у спільному каталозі моделі. Job-и для різних
+        моделей GPU будують одну модель паралельно, і одна читала ONNX, поки інша його переписувала
+        (protobuf DecodeError). Тому експорт іде з приватної копії .pt у каталозі цього двигуна.
         """
+        work_dir = tempfile.mkdtemp(prefix=".yolo-export-", dir=os.path.dirname(engine_path) or None)
+        try:
+            local_model_path = os.path.join(work_dir, os.path.basename(original_model_path))
+            shutil.copy2(original_model_path, local_model_path)
+            return self._convert_from(local_model_path, engine_path, onnx_path, model_config, builder_config)
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _convert_from(self,
+                      original_model_path: str,
+                      engine_path: str,
+                      onnx_path: Optional[str], # Не використовується прямо, але може бути створено ultralytics
+                      model_config: Dict[str, Any],
+                      builder_config: Dict[str, Any]) -> None:
+        """Конвертація з уже приватної копії .pt (див. convert)."""
         if not _ULTRALYTICS_AVAILABLE:
             raise ImportError("Бібліотека ultralytics не встановлена, неможливо конвертувати YOLO модель.")
 

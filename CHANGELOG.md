@@ -1,6 +1,9 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.4.5
+* YOLO converter exports from a private copy of the `.pt` in the engine's own directory: build Jobs for different GPU models used to export ONNX next to the shared `.pt` at the same time and read each other's half-written file (`protobuf DecodeError: Unexpected end-group tag`).
+
 ## Release 1.4.4
 * `onnxslim` is a requirement again: ultralytics needs it for `export(format="engine")`, and 1.4.3 dropped it.
 * The YOLO converter sets `YOLO_AUTOINSTALL=False` (unless set): ultralytics used to pip-install missing packages inside the running build, which in the cluster broke numpy and produced an empty ONNX ("Network must have at least one output").
