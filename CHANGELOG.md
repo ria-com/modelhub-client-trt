@@ -1,6 +1,10 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.4.3
+* Install requirements are only `onnx` and `modelhub_client`: torch and tensorrt come from the base image. Requiring `torch` made pip replace the NGC pre-release torch (`2.6.0a0+…nv24.12`) with a PyPI wheel and break the image's torchvision (`operator torchvision::nms does not exist`). Unused `torch2trt`, `onnxruntime-gpu`, `onnxslim` dropped.
+* `setup.py` split requirements on `"/n"` instead of newlines.
+
 ## Release 1.4.2
 * An engine that TensorRT deserializes but reports as built on another GPU model ("plan file across different models of devices") is treated as unusable and rebuilt, instead of being adopted.
 * Manifests get `device_checked`; manifests written by 1.4.0/1.4.1 are re-checked once (engines adopted by build Jobs before this fix included).

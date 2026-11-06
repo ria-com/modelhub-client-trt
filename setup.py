@@ -23,7 +23,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 # get project requirements list
 with open("requirements.txt", "r", encoding="utf-8") as fh:
-    packages = fh.read().split("/n")
+    # torch і tensorrt не вимагаємо: їх дає базовий образ (NGC). NGC torch — передреліз (2.6.0a0+nv…),
+    # і вимога `torch` змушувала pip замінювати його на torch з PyPI, ламаючи torchvision образу.
+    packages = [line.strip() for line in fh.read().splitlines() if line.strip() and not line.startswith("#")]
 
 setuptools.setup(
     name="modelhub-client-trt",
