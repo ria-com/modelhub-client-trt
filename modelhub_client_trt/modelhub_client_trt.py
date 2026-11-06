@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any
 import glob
 import shutil
 import json
+import socket
 
 # --- Імпорти onnx, tensorrt, ModelHub etc. залишаються ---
 try:
@@ -41,6 +42,9 @@ from modelhub_client import ModelHub
 
 # --- Імпорт фабрики конвертерів ТА СЛОВНИКА КОНВЕРТЕРІВ ---
 from .trt_converters.base import trt_engine_suffix
+from .engine_cache import (TrtEngineMissing, HeartbeatLock, build_mode, deserialize_check,
+                           engine_is_usable, gpu_compute_capability, manifest_path,
+                           trt_full_version, write_manifest)
 from .trt_converters import get_converter, BaseTrtConverter, TRT_CONVERTERS # <--- Додано TRT_CONVERTERS
 
 from .trt_converters.yolo import _ULTRALYTICS_AVAILABLE
@@ -121,7 +125,7 @@ class ModelHubTrt(ModelHub):
                  local_storage: Optional[str] = None,
                  remote_storage: Optional[str] = None,
                  postfix: str = "./modelhub",
-                 trt_build_wait_timeout: int = 300,
+                 trt_build_wait_timeout: int = 3600,
                  trt_wait_interval: int = 5,
                  trt_onnx_opset: int = 19,
                  trt_builder_memory_limit_gb: int = 4,
@@ -232,189 +236,133 @@ class ModelHubTrt(ModelHub):
         # --- Кінець формування шляхів ---
 
 
-        # --- Крок 4: Логіка блокування та конвертації (без змін) ---
-        if os.path.exists(trt_engine_path):
-             # ... (код перевірки існування та очищення) ...
-             print(f"TensorRT двигун вже існує: {trt_engine_path}")
-             if os.path.exists(onnx_file_path):
-                 try: os.remove(onnx_file_path)
-                 except OSError as e: warnings.warn(f"Не вдалося видалити залишки ONNX '{onnx_file_path}': {e}")
-             external_data_pattern = f"{os.path.splitext(onnx_file_path)[0]}.*.weight"
-             for f in glob.glob(external_data_pattern):
-                 try: os.remove(f)
-                 except OSError as e: warnings.warn(f"Не вдалося видалити залишки зовнішніх даних ONNX '{f}': {e}")
-             return model_info
+        # --- Крок 4: готовий двигун, режим збірки, блокування, конвертація ---
+        trt_version_full = trt_full_version()
+        mode = build_mode()
+        model_info["trt_version"] = trt_version_full
+        model_info["build_mode"] = mode
+        adopt_info = {
+            "model_name": model_name, "converter_type": converter_type,
+            "max_batch_size": max_batch_size, "fp16_mode": fp16_mode,
+            "compute_capability": gpu_compute_capability(),
+        }
+
+        def usable():
+            ok, manifest, reason = engine_is_usable(trt_engine_path, gpu_name_raw, trt_version_full, adopt_info)
+            return ok, manifest, reason
+
+        if mode != "force":
+            ok, manifest, reason = usable()
+            if ok:
+                print(f"TensorRT двигун вже існує: {trt_engine_path}")
+                self._cleanup_trt_dir(trt_target_dir, lock_file_path)
+                model_info["trt_manifest"] = manifest
+                return model_info
+            if os.path.exists(trt_engine_path):
+                warnings.warn(f"Двигун '{trt_engine_path}' не підходить ({reason}) — потрібна перебудова.")
+            if mode == "never":
+                raise TrtEngineMissing(
+                    f"Немає готового TensorRT-двигуна для '{model_name}' на {gpu_name_raw} / TensorRT "
+                    f"{trt_version_full}: {trt_engine_path} ({reason}). Збирає Job (MODELHUB_TRT_BUILD=ifmissing); "
+                    f"у цьому процесі збірку заборонено (MODELHUB_TRT_BUILD=never).")
 
         print(f"Цільовий TensorRT двигун: {trt_engine_path}")
-        print(f"Файл блокування: {lock_file_path}")
-        print(f"Потенційний ONNX файл: {onnx_file_path}")
-
-        lock_acquired = False
-        conversion_done = False
+        lock = HeartbeatLock(lock_file_path, wait_timeout_s=self.trt_build_wait_timeout,
+                             poll_s=self.trt_wait_interval)
+        built_by_other = (lambda: usable()[0]) if mode != "force" else (lambda: False)
         try:
-            # --- Логіка отримання блокування ---
-            # ... (код блокування без змін) ...
-            try:
-                with open(lock_file_path, 'x') as lock_file:
-                    lock_file.write(f"Locked by PID: {os.getpid()} at {time.ctime()}")
-                lock_acquired = True
-                print("Блокування встановлено.")
-            except FileExistsError:
-                print(f"Файл блокування '{lock_file_path}' вже існує. Очікування...")
-                start_wait_time = time.monotonic()
-                while time.monotonic() - start_wait_time < self.trt_build_wait_timeout:
-                    if os.path.exists(trt_engine_path):
-                        print("TensorRT двигун з'явився під час очікування.")
-                        if os.path.exists(onnx_file_path):
-                             try: os.remove(onnx_file_path)
-                             except OSError as e: warnings.warn(f"Не вдалося видалити залишки ONNX '{onnx_file_path}' після очікування: {e}")
-                        external_data_pattern = f"{os.path.splitext(onnx_file_path)[0]}.*.weight"
-                        for f in glob.glob(external_data_pattern):
-                             try: os.remove(f)
-                             except OSError as e: warnings.warn(f"Не вдалося видалити залишки зовнішніх даних ONNX '{f}' після очікування: {e}")
-                        return model_info
-                    if not os.path.exists(lock_file_path):
-                        print("Файл блокування зник. Спроба отримати блокування...")
-                        break
-                    time.sleep(self.trt_wait_interval)
-                else:
-                    if not os.path.exists(trt_engine_path):
-                        if os.path.exists(lock_file_path):
-                            try: os.remove(lock_file_path)
-                            except: pass
-                        raise TimeoutError(f"Час очікування ({self.trt_build_wait_timeout}s) вичерпано, двигун '{trt_engine_path}' не з'явився.")
-                    else:
-                         if os.path.exists(onnx_file_path):
-                              try: os.remove(onnx_file_path)
-                              except OSError as e: warnings.warn(f"Не вдалося видалити залишки ONNX '{onnx_file_path}' після таймауту: {e}")
-                         external_data_pattern = f"{os.path.splitext(onnx_file_path)[0]}.*.weight"
-                         for f in glob.glob(external_data_pattern):
-                            try: os.remove(f)
-                            except OSError as e: warnings.warn(f"Не вдалося видалити залишки зовнішніх даних ONNX '{f}' після таймауту: {e}")
-                         return model_info
-
-            if not lock_acquired:
-                 try:
-                    with open(lock_file_path, 'x') as lock_file:
-                        lock_file.write(f"Locked by PID: {os.getpid()} at {time.ctime()} (after wait)")
-                    lock_acquired = True
-                    print("Блокування успішно встановлено після очікування.")
-                 except FileExistsError:
-                    raise RuntimeError(f"Не вдалося отримати блокування '{lock_file_path}' після очікування (конкурентний доступ).")
-                 except Exception as e_lock:
-                    raise RuntimeError(f"Не вдалося отримати блокування '{lock_file_path}' після очікування: {e_lock}") from e_lock
-            # --- Кінець логіки блокування ---
-
-            # --- Блок конвертації ---
-            if lock_acquired:
-                if os.path.exists(trt_engine_path):
-                     print(f"Двигун '{trt_engine_path}' вже існує після отримання блокування. Пропуск конвертації.")
-                     conversion_done = False
-                else:
-                    print(f"\n--- Початок конвертації TensorRT (тип: {converter_type}) ---")
-                    print(f"GPU: {gpu_name_raw}")
-                    print(f"Оригінальна модель (шлях/папка): {original_model_path}")
-                    print(f"Цільовий двигун: {trt_engine_path}")
-                    print(f"Параметри: max_batch_size={max_batch_size}, fp16={fp16_mode}")
-
-                    try:
-                        converter: BaseTrtConverter = get_converter(converter_type)
-                        builder_config = {
-                            'fp16_mode': fp16_mode,
-                            'max_batch_size': max_batch_size,
-                            'memory_limit': self.trt_builder_memory_limit,
-                            'opset': self.trt_onnx_opset,
-                            'ultralytics_workspace_gb': self.trt_ultralytics_workspace_gb,
-                        }
-                        converter.convert(
-                            original_model_path=original_model_path,
-                            engine_path=trt_engine_path,
-                            onnx_path=onnx_file_path,
-                            model_config=model_config,
-                            builder_config=builder_config
-                        )
-                        conversion_done = True
-                        print(f"--- Конвертація TensorRT (тип: {converter_type}) успішно завершена ---")
-
-                    except (ImportError, FileNotFoundError, ValueError, RuntimeError, TypeError, KeyError) as e:
-                        import traceback
-                        traceback.print_exc()
-                        if lock_acquired and os.path.exists(lock_file_path):
-                            try: os.remove(lock_file_path)
-                            except: pass
-                        if os.path.exists(onnx_file_path):
-                             try: os.remove(onnx_file_path)
-                             except: pass
-                        raise RuntimeError(f"Помилка під час конвертації TRT (тип: {converter_type}): {e}") from e
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        if lock_acquired and os.path.exists(lock_file_path):
-                            try: os.remove(lock_file_path)
-                            except: pass
-                        if os.path.exists(onnx_file_path):
-                             try: os.remove(onnx_file_path)
-                             except: pass
-                        raise RuntimeError(f"Неочікувана помилка під час конвертації TRT (тип: {converter_type}): {e}") from e
-            # --- Кінець блоку конвертації ---
-
+            if not lock.acquire(done=built_by_other):
+                print("TensorRT двигун зібрав інший процес, поки ми чекали.")
+                model_info["trt_manifest"] = usable()[1]
+                self._cleanup_trt_dir(trt_target_dir, lock_file_path)
+                return model_info
+            if mode != "force" and usable()[0]:
+                print(f"Двигун '{trt_engine_path}' з'явився до отримання блокування. Пропуск конвертації.")
+            else:
+                for stale in (trt_engine_path, manifest_path(trt_engine_path)):
+                    if os.path.exists(stale):
+                        os.remove(stale)
+                print(f"\n--- Початок конвертації TensorRT (тип: {converter_type}) ---")
+                print(f"GPU: {gpu_name_raw}, TensorRT {trt_version_full}")
+                print(f"Оригінальна модель (шлях/папка): {original_model_path}")
+                print(f"Параметри: max_batch_size={max_batch_size}, fp16={fp16_mode}")
+                started = time.monotonic()
+                try:
+                    converter: BaseTrtConverter = get_converter(converter_type)
+                    builder_config = {
+                        'fp16_mode': fp16_mode,
+                        'max_batch_size': max_batch_size,
+                        'memory_limit': self.trt_builder_memory_limit,
+                        'opset': self.trt_onnx_opset,
+                        'ultralytics_workspace_gb': self.trt_ultralytics_workspace_gb,
+                    }
+                    converter.convert(
+                        original_model_path=original_model_path,
+                        engine_path=trt_engine_path,
+                        onnx_path=onnx_file_path,
+                        model_config=model_config,
+                        builder_config=builder_config
+                    )
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    raise RuntimeError(f"Помилка під час конвертації TRT (тип: {converter_type}): {e}") from e
+                build_seconds = round(time.monotonic() - started, 1)
+                ok, device_mem, reason = deserialize_check(trt_engine_path)
+                if not ok:
+                    raise RuntimeError(f"Зібраний двигун '{trt_engine_path}' не десеріалізується: {reason}")
+                write_manifest(trt_engine_path, {
+                    **adopt_info, "gpu_name": gpu_name_raw, "trt_version": trt_version_full,
+                    "engine_bytes": os.path.getsize(trt_engine_path), "device_memory_bytes": device_mem,
+                    "build_seconds": build_seconds, "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "built_on": socket.gethostname(), "library_version": _library_version(),
+                    "adopted": False,
+                })
+                print(f"--- Конвертація TensorRT (тип: {converter_type}) завершена за {build_seconds} с ---")
         finally:
-            # --- Логіка зняття блокування та очистки (ОНОВЛЕНО v2) ---
+            lock.release()
+            if os.path.exists(trt_engine_path):
+                self._cleanup_trt_dir(trt_target_dir, lock_file_path)
+            else:
+                for f in [onnx_file_path] + glob.glob(f"{os.path.splitext(onnx_file_path)[0]}.*.weight"):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
 
-            engine_exists = os.path.exists(trt_engine_path)
-
-            # Знімаємо блокування, ЯКЩО воно було встановлено ЦИМ процесом
-            if lock_acquired and os.path.exists(lock_file_path):
-                try:
-                    os.remove(lock_file_path)
-                    print("Блокування знято.")
-                except OSError as e:
-                    warnings.warn(f"Не вдалося видалити файл блокування '{lock_file_path}': {e}")
-
-            # Очищення тимчасових файлів (ONNX та зовнішні дані), ЯКЩО двигун існує
-            if engine_exists:
-                print(f"Очищення тимчасових файлів у директорії: {trt_target_dir}")
-                files_in_target_dir = []
-                try:
-                    files_in_target_dir = os.listdir(trt_target_dir)
-                except OSError as e:
-                     warnings.warn(f"Не вдалося отримати список файлів у '{trt_target_dir}': {e}")
-
-                for filename in files_in_target_dir:
-                    file_path_to_check = os.path.join(trt_target_dir, filename)
-                    # --- ЗМІНА ТУТ: Видаляємо все, що НЕ є .engine файлом ---
-                    # (і не є файлом блокування, хоча він вже має бути видалений)
-                    if not filename.endswith(".engine") and file_path_to_check != lock_file_path:
-                    # --- КІНЕЦЬ ЗМІНИ ---
-                        try:
-                            if os.path.isfile(file_path_to_check):
-                                print(f"  - Видалення тимчасового файлу: {filename}")
-                                os.remove(file_path_to_check)
-                        except OSError as e:
-                            warnings.warn(f"Не вдалося видалити тимчасовий файл '{file_path_to_check}': {e}")
-
-            elif conversion_done: # Якщо конвертували, але двигун НЕ з'явився
-                 print(f"Спроба очищення файлів у '{trt_target_dir}' після невдалої конвертації...")
-                 files_in_target_dir = []
-                 try: files_in_target_dir = os.listdir(trt_target_dir)
-                 except OSError as e: warnings.warn(f"Не вдалося отримати список файлів у '{trt_target_dir}': {e}")
-
-                 for filename in files_in_target_dir:
-                     file_path_to_check = os.path.join(trt_target_dir, filename)
-                     # При невдачі видаляємо все (крім lock, якщо він дивом залишився)
-                     if file_path_to_check != lock_file_path:
-                         try:
-                            if os.path.isfile(file_path_to_check):
-                                print(f"  - Видалення залишків: {filename}")
-                                os.remove(file_path_to_check)
-                         except OSError as e:
-                             warnings.warn(f"Не вдалося видалити залишки '{file_path_to_check}': {e}")
-
-        # --- Решта методу (перевірка існування та return) без змін ---
-        if not os.path.exists(trt_engine_path):
-             raise RuntimeError(f"Не вдалося створити або знайти TensorRT двигун '{trt_engine_path}'. Перевірте логи вище.")
+        ok, manifest, reason = usable()
+        if not ok:
+            raise RuntimeError(f"Не вдалося створити або знайти TensorRT двигун '{trt_engine_path}': {reason}")
+        model_info["trt_manifest"] = manifest
         print(f"Успішно отримано TensorRT двигун: {trt_engine_path}")
         return model_info
+
+    @staticmethod
+    def _cleanup_trt_dir(trt_target_dir: str, lock_file_path: str) -> None:
+        """Прибирає проміжні файли збірки (ONNX, зовнішні ваги), лишає двигуни, manifest-и і чужі lock/tmp."""
+        try:
+            names = os.listdir(trt_target_dir)
+        except OSError as e:
+            warnings.warn(f"Не вдалося отримати список файлів у '{trt_target_dir}': {e}")
+            return
+        for filename in names:
+            path = os.path.join(trt_target_dir, filename)
+            if (filename.endswith((".engine", ".engine.json", ".lock")) or ".tmp" in filename
+                    or path == lock_file_path or not os.path.isfile(path)):
+                continue
+            try:
+                print(f"  - Видалення тимчасового файлу: {filename}")
+                os.remove(path)
+            except OSError as e:
+                warnings.warn(f"Не вдалося видалити тимчасовий файл '{path}': {e}")
+
+
+def _library_version() -> str:
+    try:
+        from . import __version__
+        return __version__
+    except Exception:
+        return "unknown"
 
 
 # --- Приклад використання __main__ (не змінюємо) ---
