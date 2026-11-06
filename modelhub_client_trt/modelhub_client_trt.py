@@ -82,8 +82,9 @@ def auto_detect_converter_type(original_model_path: str, model_config: Dict[str,
       2. `model_config['architecture']` містить 'yolo' -> 'yolo'.
       3. `model_config['architecture']` містить 'stn-ocr' -> 'crnn' (CTC-CRNN OCR
          sequence-модель — НЕ image_classifier).
-      4. Файл закінчується на '.pt' -> 'image_classifier' (припускаємо TorchScript).
-      5. Інакше -> 'image_classifier' (типовий фолбек за замовчуванням).
+      4. Файл '.ckpt' і `letters` у конфігу -> 'crnn' (Lightning-чекпоінт OCR).
+      5. Файл закінчується на '.pt' -> 'image_classifier' (припускаємо TorchScript).
+      6. Інакше -> 'image_classifier' (типовий фолбек за замовчуванням).
     """
     model_architecture = str(model_config.get("architecture", "")).lower()
     if os.path.isdir(original_model_path) and os.path.exists(os.path.join(original_model_path, 'config.json')):
@@ -102,6 +103,11 @@ def auto_detect_converter_type(original_model_path: str, model_config: Dict[str,
         converter_type = 'crnn'
         print(f"Автоматично визначено тип конвертера як '{converter_type}' "
               f"(поле 'architecture'='{model_config.get('architecture')}' конфігу вказує на STN-OCR/CRNN).")
+    elif original_model_path.endswith(".ckpt") and model_config.get("letters"):
+        # Lightning-чекпоінт OCR-моделі (конфіг з алфавітом `letters`, без `architecture`):
+        # image_classifier такий dict не завантажить, це CTC-CRNN.
+        converter_type = 'crnn'
+        print(f"Автоматично визначено тип конвертера як '{converter_type}' (.ckpt з 'letters' у конфігу).")
     elif original_model_path.endswith(".pt"):
         # .pt може бути YOLO або TorchScript image_classifier. Якщо архітектура з конфігу
         # не підказала YOLO/STN-OCR (гілки вище), безпечніше припустити image_classifier.

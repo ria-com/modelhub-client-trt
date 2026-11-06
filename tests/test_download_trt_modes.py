@@ -54,7 +54,7 @@ def test_first_call_builds_and_writes_manifest(hub):
     m = read_manifest(info["trt_engine_path"])
     assert FakeConverter.calls == 1
     assert m["gpu_name"] == info["gpu_name"] and m["trt_version"] == info["trt_version"]
-    assert m["adopted"] is False and m["device_memory_bytes"] is not None and m["library_version"] == "1.4.0"
+    assert m["adopted"] is False and m["device_memory_bytes"] is not None and m["library_version"] == mod._library_version()
     assert sorted(os.listdir(os.path.dirname(info["trt_engine_path"]))) == sorted(
         [os.path.basename(info["trt_engine_path"]), os.path.basename(info["trt_engine_path"]) + ".json"])
 

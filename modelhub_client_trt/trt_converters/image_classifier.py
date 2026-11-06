@@ -42,6 +42,24 @@ def _is_scriptmodule_export_error(e: Exception) -> bool:
     return False
 
 
+def _is_dynamo_exporter_error(e: Exception) -> bool:
+    """
+    True, якщо впав сам dynamo-експортер (типовий у torch >= 2.9), а не модель: несумісні
+    версії onnx_ir/onnxscript (напр. "module 'onnx_ir' has no attribute 'schemas'") або
+    torch.export не впорався з графом. Legacy exporter (dynamo=False) у таких випадках
+    зазвичай працює — як і було на старих torch, де він за замовчуванням.
+    """
+    needles = ("onnx_ir", "onnxscript", "torch.export", "torch._dynamo", "exportdb")
+    cur = e
+    for _ in range(6):
+        if cur is None:
+            break
+        if "TorchExportError" in type(cur).__name__ or any(n in str(cur) for n in needles):
+            return True
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return False
+
+
 def _torch_onnx_export_with_optional_dynamo(
     model,
     example_input,
@@ -202,8 +220,9 @@ class ImageClassifierConverter(BaseTrtConverter):
             traceback.print_exc()
 
             # Якщо це саме ScriptModule+torch.export кейс — робимо fallback на legacy exporter
-            if _is_scriptmodule_export_error(e):
-                print("WARN: torch.export не підтримує ScriptModule. Повтор експорту через legacy exporter (dynamo=False)...")
+            if _is_scriptmodule_export_error(e) or _is_dynamo_exporter_error(e):
+                print(f"WARN: dynamo-експорт в ONNX не вдався ({type(e).__name__}: {e}). "
+                      f"Повтор експорту через legacy exporter (dynamo=False)...")
                 try:
                     _do_export(force_legacy=True)
                     print("Legacy експорт в ONNX успішний.")

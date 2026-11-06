@@ -1,6 +1,11 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.4.1
+* `crnn` converter: layer sizes come from the checkpoint weights (`linear1` in/out, LSTM hidden size, bidirectional, number of classes) instead of the hard-coded `Linear(5632, 512)`; the input size from the model config (`image_size_h/w`, then `height/width` as OCR configs write it, then the checkpoint `height/width`, then the old 128x384). A wrong input size fails with a clear error before export. Checkpoints with `conv_nn` / `recurrent_layer{1,2}.rnn` module names (cadastral-number-detection, nomeroff-net) are mapped onto the same graph. Example: ria-vin-detection OCR — `Linear(2816, 512)`, 64x2048.
+* Converter auto-detection: a `.ckpt` file with `letters` in the model config is a CRNN OCR checkpoint (`crnn`), not an image classifier.
+* `image_classifier`: when the dynamo ONNX exporter (default in torch >= 2.9) fails inside onnx_ir/onnxscript/torch.export, the export is retried with the legacy exporter, as already done for TorchScript models.
+
 ## Release 1.4.0
 * Engine manifest `<engine>.json` next to every engine: GPU name, compute capability, full TensorRT version, engine size, device memory, build time, library version. An engine is reused only when its manifest matches the current GPU and TensorRT; an engine without a manifest (built by an older release) is checked by deserialization once and adopted.
 * An engine that does not deserialize or was built for another TensorRT version is rebuilt instead of being handed to the caller.
