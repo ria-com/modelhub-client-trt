@@ -1,6 +1,10 @@
 Changelog for `modelhub-client`
 =======================
 
+## Release 1.4.4
+* `onnxslim` is a requirement again: ultralytics needs it for `export(format="engine")`, and 1.4.3 dropped it.
+* The YOLO converter sets `YOLO_AUTOINSTALL=False` (unless set): ultralytics used to pip-install missing packages inside the running build, which in the cluster broke numpy and produced an empty ONNX ("Network must have at least one output").
+
 ## Release 1.4.3
 * Install requirements are only `onnx` and `modelhub_client`: torch and tensorrt come from the base image. Requiring `torch` made pip replace the NGC pre-release torch (`2.6.0a0+…nv24.12`) with a PyPI wheel and break the image's torchvision (`operator torchvision::nms does not exist`). Unused `torch2trt`, `onnxruntime-gpu`, `onnxslim` dropped.
 * `setup.py` split requirements on `"/n"` instead of newlines.

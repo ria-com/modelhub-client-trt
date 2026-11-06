@@ -7,6 +7,11 @@ import warnings
 import torch
 from typing import Dict, Any, Optional
 
+# ultralytics при експорті сам доставляє відсутні пакети (onnxslim тощо) через pip у запущеному
+# процесі. У кластері індекс pip недоступний: установлення обривається, ламає numpy, і ONNX
+# виходить порожнім («Network must have at least one output»). Краще чесна помилка.
+os.environ.setdefault("YOLO_AUTOINSTALL", "False")
+
 try:
     from ultralytics import YOLO
     _ULTRALYTICS_AVAILABLE = True
