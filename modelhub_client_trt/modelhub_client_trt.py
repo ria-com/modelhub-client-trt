@@ -339,7 +339,8 @@ class ModelHubTrt(ModelHub):
 
     @staticmethod
     def _cleanup_trt_dir(trt_target_dir: str, lock_file_path: str) -> None:
-        """Прибирає проміжні файли збірки (ONNX, зовнішні ваги), лишає двигуни, manifest-и і чужі lock/tmp."""
+        """Прибирає проміжні файли збірки (ONNX, зовнішні ваги); лишає двигуни, .json поруч із ними
+        (manifest, кеш входів/виходів проєкту) і чужі lock/tmp."""
         try:
             names = os.listdir(trt_target_dir)
         except OSError as e:
@@ -347,7 +348,7 @@ class ModelHubTrt(ModelHub):
             return
         for filename in names:
             path = os.path.join(trt_target_dir, filename)
-            if (filename.endswith((".engine", ".engine.json", ".lock")) or ".tmp" in filename
+            if (filename.endswith((".engine", ".json", ".lock")) or ".tmp" in filename
                     or path == lock_file_path or not os.path.isfile(path)):
                 continue
             try:

@@ -124,3 +124,12 @@ def test_concurrent_callers_build_once(hub):
     for t in threads:
         t.join()
     assert not errors and len(results) == 4 and FakeConverter.calls == 1
+
+
+def test_cleanup_keeps_json_files_next_to_the_engine(hub):
+    info = hub.download_model_by_name_trt("m")
+    side = info["trt_engine_path"] + ".io.json"       # кеш входів/виходів, який пише проєкт
+    open(side, "w").write("{}")
+    os.remove(info["trt_engine_path"] + ".json")
+    hub.download_model_by_name_trt("m")              # шлях з очищенням каталогу
+    assert os.path.exists(side)
